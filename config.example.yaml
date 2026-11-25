@@ -33,6 +33,7 @@ laptop_alarm: true
 # How often the Edge-window checks (Walmart, Amazon, Staples) run, in minutes.
 browser_check_minutes: 20
 
-# Send a "checker is broken" alert after this many failed checks in a row
-# (at one check every 5 minutes, 12 = about an hour).
-failure_alert_after: 12
+# Send a "checker is broken" alert when a store has been failing for this long.
+# A failing store is also checked less often (15 min, 30 min, then hourly) until
+# it works again, so a temporary block can wear off.
+failure_alert_minutes: 60

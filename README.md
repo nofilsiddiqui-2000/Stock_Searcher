@@ -15,14 +15,16 @@ reused for other hard-to-find products; see [Reusing it](#reusing-it-for-other-p
 - **Status screen** in the terminal (`--status`, `--live`): last check per store, what was found,
   and the last time each product was available.
 - **Stock history**: every restock and sell-out is added to `stock_history.csv`.
-- **Broken-check warning**: if a store keeps failing for about an hour, you get a notification
-  instead of silently missing stock.
+- **Fail-safe for blocked or broken stores**: a store that fails 3 times in a row is checked
+  less often (after 15 min, then 30 min, then once an hour) so a temporary block can wear off,
+  and goes back to normal on its first success. If it's still failing after an hour you get one
+  phone warning, and another message when it works again. One store failing never stops the others.
 
 ## Stores
 | Store | How it's checked | In-store pickup | Every |
 |---|---|---|---|
 | Best Buy Canada | the site's own JSON search + availability API; marketplace sellers ignored | yes, 42 Montreal-area stores | 5 min |
-| Canada Computers | PlayStation category page + product page store list | yes, 4 Montreal-area stores | 5 min |
+| Canada Computers | PlayStation category page (site search as backup) + product page store list | yes, 4 Montreal-area stores | 5 min |
 | Staples.ca | fixed product pages; must say "Delivery available" | no | 20 min |
 | Walmart.ca | search page; only listings **sold by Walmart** | no | 20 min |
 | Amazon.ca | search limited to **sold by Amazon.ca** | no | 20 min |
@@ -79,7 +81,7 @@ Stop the watcher: `Unregister-ScheduledTask -TaskName "PS5 Stock Watch" -Confirm
 | `retailers` | turn each store on or off |
 | `laptop_alarm` | play the alarm and show the pop-up on this computer |
 | `browser_check_minutes` | how often the Edge-window stores are checked |
-| `failure_alert_after` | failed checks in a row before you're warned |
+| `failure_alert_minutes` | how long a store can keep failing before you're warned (default 60) |
 
 ## Files
 | File | |
@@ -130,5 +132,7 @@ add it to `HTTP_RETAILERS` (plain requests) or `BROWSER_RETAILERS` (needs the Ed
 - Stores change their pages. If a store shows **FAILED** on the status screen for a while, its
   page probably changed and its check function needs updating.
 - Checking too often can get you blocked. Canada Computers once refused its search page to
-  this connection after a few hours of 5-minute checks, which is why its category page is used.
+  this connection after a few hours of 5-minute checks, which is why its category page is used
+  (with the search as a backup) and why failing stores slow down by themselves.
+- The status screen shows a slowed-down store as `FAILED (… slowed down, next try 12:28 AM)`.
 - Times in the history are accurate to the check interval.

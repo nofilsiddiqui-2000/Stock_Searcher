@@ -237,19 +237,35 @@ def check_bestbuy(session: requests.Session, queries=("ps5 digital edition", "ps
 CC_PLAYSTATION_PAGE = "https://www.canadacomputers.com/en/877/playstation"
 
 
+CC_SEARCH_WORDS = {"PS5 Digital": "ps5 digital", "PS5 Pro": "ps5 pro"}  # backup only
+
+
+def _cc_cards(session: requests.Session, url: str, params=None) -> list:
+    r = session.get(url, params=params, timeout=TIMEOUT)
+    r.raise_for_status()
+    doc = lxml_html.fromstring(r.text)
+    found = doc.xpath("//div[contains(@class,'js-product') and starts-with(@id,'product_card_')]")
+    if not found and "product-miniature" not in r.text:
+        raise RuntimeError("Canada Computers page had no product cards (blocked or format changed?)")
+    return found
+
+
 def check_canadacomputers(session: requests.Session, queries=None) -> list[Offer]:
     """queries = the watched consoles, whose Montreal store stock is looked up when
     sold out online (default: all). The one category page covers every console."""
     products = set(queries or PRODUCTS)
-    cards = []
-    for url in (CC_PLAYSTATION_PAGE,):
-        r = session.get(url, timeout=TIMEOUT)
-        r.raise_for_status()
-        doc = lxml_html.fromstring(r.text)
-        found = doc.xpath("//div[contains(@class,'js-product') and starts-with(@id,'product_card_')]")
-        if not found and "product-miniature" not in r.text:
-            raise RuntimeError("Canada Computers page had no product cards (blocked or format changed?)")
-        cards += found
+    try:
+        cards = _cc_cards(session, CC_PLAYSTATION_PAGE)
+    except Exception as e:
+        # Backup: the site search, one search per watched console.
+        log.warning("Canada Computers category page failed (%s); trying the search instead", e)
+        try:
+            cards = []
+            for p in products:
+                cards += _cc_cards(session, "https://www.canadacomputers.com/en/search",
+                                   {"s": CC_SEARCH_WORDS[p]})
+        except Exception as e2:
+            raise RuntimeError(f"category page: {e}; search: {e2}") from e2
 
     offers, seen = [], set()
     for card in cards:
@@ -606,6 +622,23 @@ def record_sold_out(state: dict, state_key: str, o: "Offer") -> None:
             return
 
 
+# Fail-safe for a store that keeps failing (blocked, page changed, ...): after
+# BACKOFF_AFTER failures in a row it is checked less often, so a temporary block can
+# wear off instead of being hit every 5 minutes. The first success puts it back to normal.
+BACKOFF_AFTER = 3
+BACKOFF_MINUTES = (15, 30, 60)  # 4th failure waits 15 min, 5th 30 min, then once an hour
+
+
+def backoff_until(state: dict, key: str) -> float | None:
+    """When a failing store may be checked again, or None if it isn't slowed down."""
+    n = state.get("failures", {}).get(key, 0)
+    last = state.get("last_check", {}).get(key) or {}
+    if n < BACKOFF_AFTER or last.get("ok", True):
+        return None
+    minutes = BACKOFF_MINUTES[min(n - BACKOFF_AFTER, len(BACKOFF_MINUTES) - 1)]
+    return last["time"] + minutes * 60 - 60  # a minute early, to line up with the 5-minute runs
+
+
 def run_once(cfg: dict, dry_run: bool = False) -> int:
     state = load_state()
     state.setdefault("in_stock", {})
@@ -614,11 +647,20 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
 
     session = requests.Session()
     session.headers.update(HEADERS)
-    threshold = cfg.get("failure_alert_after", 6)
+    alert_after = cfg.get("failure_alert_minutes", 60) * 60
+    failing = state.setdefault("failing", {})  # store -> {"since": time, "alerted": bool}
     matches_in_stock = 0
 
+    def slowed_down(key) -> bool:
+        until = None if dry_run else backoff_until(state, key)
+        if until and time.time() < until:
+            log.info("%s: slowed down after %d failures, next try %s", key,
+                     state["failures"][key], time.strftime("%I:%M %p", time.localtime(until)))
+            return True
+        return False
+
     enabled = [k for k, on in cfg["retailers"].items() if on and k in RETAILERS]
-    http_keys = [k for k in enabled if k in HTTP_RETAILERS]
+    http_keys = [k for k in enabled if k in HTTP_RETAILERS and not slowed_down(k)]
     browser_keys = [k for k in enabled if k in BROWSER_RETAILERS]
 
     def process(key, fetch):
@@ -635,23 +677,32 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
             state.setdefault("last_check", {})[key] = {
                 "time": time.time(), "ok": False, "error": str(e).splitlines()[0][:150]}
             log.warning("%s check failed (%d in a row): %s", key, n, e)
-            if n == threshold and not dry_run:
+            if dry_run:
+                return
+            f = failing.setdefault(key, {"since": time.time(), "alerted": False})
+            if not f["alerted"] and time.time() - f["since"] >= alert_after:
                 try:
                     notify(cfg, f"PS5 watcher: {key} check is failing",
-                           f"The {key} check has failed {n} times in a row.\nLast error: {e}\n"
-                           "Stock at this store is NOT being watched until it recovers.",
+                           f"The {key} check has failed {n} times in a row since "
+                           f"{time.strftime('%I:%M %p', time.localtime(f['since'])).lstrip('0')}.\n"
+                           f"Last error: {e}\n"
+                           "It is now checked less often (at most once an hour) until it works again; "
+                           "you'll get a message when it does.",
                            priority="default", tags="warning")
+                    f["alerted"] = True
                 except Exception as ne:
                     log.error("could not send failure alert: %s", ne)
             return
 
-        if state["failures"].get(key, 0) >= threshold and not dry_run:
-            try:
-                notify(cfg, f"PS5 watcher: {key} check is working again",
-                       f"The {key} check recovered.", priority="low", tags="white_check_mark")
-            except Exception as ne:
-                log.error("could not send recovery alert: %s", ne)
-        state["failures"][key] = 0
+        if not dry_run:
+            if failing.pop(key, {}).get("alerted"):
+                try:
+                    notify(cfg, f"PS5 watcher: {key} check is working again",
+                           f"The {key} check recovered and is back to its normal schedule.",
+                           priority="low", tags="white_check_mark")
+                except Exception as ne:
+                    log.error("could not send recovery alert: %s", ne)
+            state["failures"][key] = 0
         found = []  # matching consoles in stock right now, for --status
 
         for o in offers:
@@ -711,6 +762,8 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
     # The browser opens a visible window, so it runs less often than the quick checks.
     every = cfg.get("browser_check_minutes", 20) * 60
     browser_due = dry_run or time.time() - state.get("last_browser_run", 0) >= every - 60
+    if browser_due:
+        browser_keys = [k for k in browser_keys if not slowed_down(k)]
     if browser_keys and browser_due:
         if not dry_run:
             state["last_browser_run"] = time.time()
@@ -842,6 +895,11 @@ def _status_table(cfg: dict, state: dict, product: str) -> None:
         if not c["ok"]:
             fails = state.get("failures", {}).get(key, 0)
             result = f"{RED}FAILED{RESET} ({fails} in a row): {c['error'][:60]}"
+            until = backoff_until(state, key)
+            if until:
+                nxt = time.strftime("%I:%M %p", time.localtime(max(until, time.time()))).lstrip("0")
+                result = (f"{RED}FAILED{RESET} ({fails} in a row, {YELLOW}slowed down, next try {nxt}{RESET}): "
+                          f"{c['error'][:45]}")
         elif mine:
             result = f"{GREEN}{BOLD}IN STOCK!{RESET}"
             in_stock += [(name, s) for s in mine]
