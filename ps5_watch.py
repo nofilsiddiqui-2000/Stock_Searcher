@@ -773,9 +773,17 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
 
         listings = {p: sum(is_console_listing(o, cfg) and product_of(o.title) == p for o in offers)
                     for p in watched(cfg)}
+        # Cheapest in-stock price per product (any seller, even over the limit): market price,
+        # shown on the status screen only. Never used for alerts.
+        cheapest = {}
+        for o in offers:
+            p = product_of(o.title)
+            if o.in_stock and o.price is not None and is_console_listing(o, cfg) and (
+                    p not in cheapest or o.price < cheapest[p]["price"]):
+                cheapest[p] = {"price": o.price, "reseller": not o.first_party}
         state.setdefault("last_check", {})[key] = {
             "time": time.time(), "ok": True, "products": len(offers),
-            "listings": listings, "in_stock": found}
+            "listings": listings, "in_stock": found, "cheapest": cheapest}
         log.info("%s: %d products checked (%s)", key, len(offers),
                  ", ".join(f"{n} {p} listings" for p, n in listings.items()))
 
@@ -935,12 +943,19 @@ def _status_table(cfg: dict, state: dict, product: str) -> None:
             in_stock += [(name, s) for s in mine]
         elif (key, product) in NOT_SOLD:
             result = f"{DIM}{NOT_SOLD[(key, product)]}{RESET}"
-        elif key == "amazon":
+        elif key == "amazon" and not c.get("listings", {}).get(product, 0):
             result = f"Not available {DIM}(Amazon.ca itself isn't selling it right now){RESET}"
         else:
             n = c.get("listings", {}).get(product, 0)
             pages = f"{n} {product} product page" + ("s, all" if n != 1 else ",")
             result = f"Not available {DIM}(found {pages} sold out or over ${max_price:,}){RESET}"
+        if c["ok"] and not mine and (key, product) not in NOT_SOLD:
+            low = c.get("cheapest", {}).get(product)
+            if low:
+                who = "reseller" if low["reseller"] else "store"
+                result += f" {YELLOW}cheapest in stock: ${low['price']:,.2f} ({who}){RESET}"
+            elif "cheapest" in c:
+                result += f" {DIM}- nothing in stock at any price{RESET}"
         print(f"  {name:<18}{when}{result}")
 
     if not in_stock:

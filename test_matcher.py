@@ -372,6 +372,37 @@ def test_vanished_listing_alerts_again():
         del ps5_watch.RETAILERS["fake"], ps5_watch.HTTP_RETAILERS["fake"]
 
 
+def test_cheapest_in_stock_price():
+    """The status screen gets the cheapest in-stock price (resellers and over-limit too),
+    without any alert for those."""
+    import tempfile
+    from pathlib import Path
+    import ps5_watch
+
+    sent = []
+
+    def fake(s, q=None):
+        return [Offer("Fake", "1", PRO_TITLES[0], 1099.99, "http://a", False),          # sold out
+                Offer("Fake", "2", PRO_TITLES[0], 1599.99, "http://b", True, False),    # reseller
+                Offer("Fake", "3", PRO_TITLES[0], 1399.99, "http://c", True, False),    # reseller
+                Offer("Fake", "4", PRO_TITLES[0], 49.99, "http://d", True)]             # accessory
+
+    tmp = Path(tempfile.mkdtemp())
+    orig = ps5_watch.notify, ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV
+    ps5_watch.notify = lambda cfg, title, *a, **k: sent.append(title)
+    ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV = tmp / "state.json", tmp / "history.csv"
+    ps5_watch.RETAILERS["fake"] = ps5_watch.HTTP_RETAILERS["fake"] = fake
+    cfg = {**PRO_ONLY, "retailers": {"fake": True}}
+    try:
+        ps5_watch.run_once(cfg)
+        assert not sent, sent
+        low = ps5_watch.load_state()["last_check"]["fake"]["cheapest"]
+        assert low == {"PS5 Pro": {"price": 1399.99, "reseller": True}}, low
+    finally:
+        ps5_watch.notify, ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV = orig
+        del ps5_watch.RETAILERS["fake"], ps5_watch.HTTP_RETAILERS["fake"]
+
+
 def test_crash_is_reported():
     """A whole check crashing warns the phone (at most hourly) and is cleared on success."""
     import tempfile
@@ -407,5 +438,6 @@ if __name__ == "__main__":
     test_failing_store_slows_down()
     test_canadacomputers_backup_page()
     test_vanished_listing_alerts_again()
+    test_cheapest_in_stock_price()
     test_crash_is_reported()
     print("all matcher tests passed")

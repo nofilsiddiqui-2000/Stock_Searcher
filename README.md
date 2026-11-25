@@ -13,7 +13,8 @@ reused for other hard-to-find products; see [Reusing it](#reusing-it-for-other-p
 - **Laptop alarm**: a loud looping sound and an always-on-top pop-up (Yes opens the product page).
 - **One alert per restock**, not one every check. If the item sells out and comes back, you get another.
 - **Status screen** in the terminal (`--status`, `--live`): last check per store, what was found,
-  and the last time each product was available.
+  the last time each product was available, and the cheapest price it's in stock at right now
+  (even over your limit or from a reseller), so you can see the going market price.
 - **Stock history**: every restock and sell-out is added to `stock_history.csv`.
 - **Fail-safe for blocked or broken stores**: a store that fails 3 times in a row is checked
   less often (after 15 min, then 30 min, then once an hour) so a temporary block can wear off,
