@@ -4,8 +4,13 @@ A small, free, local-only stock watcher for Canadian retailers. It checks stores
 schedule and alerts you the moment a product you want is **in stock, sold by the store
 itself, and under your price limit**. It only alerts. It never buys anything.
 
-It was built to catch a PS5 restock (currently set up for the **PS5 Pro**, with the
-**PS5 Digital Edition** ready to switch back on). The parts are generic, so it can be
+It was built to catch a PS5 restock. It currently watches three consoles, each with its own
+price limit:
+- **PS5 Digital Edition**: every storage size (825GB and 1TB) and Digital bundles
+- **PS5 with disc drive** ("Disc"): stores usually call it just "PlayStation 5 Slim 1TB Console"
+- **PS5 Pro**
+
+The parts are generic, so it can be
 reused for other hard-to-find products; see [Reusing it](#reusing-it-for-other-products).
 
 ## What you get
@@ -26,8 +31,8 @@ reused for other hard-to-find products; see [Reusing it](#reusing-it-for-other-p
 |---|---|---|---|
 | Best Buy Canada | the site's own JSON search + availability API; marketplace sellers ignored | yes, 42 Montreal-area stores | 5 min |
 | Canada Computers | PlayStation category page (site search as backup) + product page store list | yes, 4 Montreal-area stores | 5 min |
-| Staples.ca | fixed product pages; must say "Delivery available" | no | 20 min |
-| Walmart.ca | search page; only listings **sold by Walmart** | no | 20 min |
+| Staples.ca | fixed product pages; must say "Delivery available". **One page per visit, in turns** | no | 20 min (each console's page about once an hour) |
+| Walmart.ca | one search page for every model; only listings **sold by Walmart** | no | 20 min |
 | Amazon.ca | search limited to **sold by Amazon.ca** | no | 20 min |
 | EB Games | not supported: its bot check blocks automated browsers | – | – |
 
@@ -76,7 +81,7 @@ Stop the watcher: `Unregister-ScheduledTask -TaskName "PS5 Stock Watch" -Confirm
 ## Settings (`config.yaml`)
 | Setting | What it does |
 |---|---|
-| `filters.max_price` | the products being watched, each with its price limit (before tax). Comment a line out to stop watching it. |
+| `filters.max_price` | the products being watched (`PS5 Digital`, `PS5 Disc`, `PS5 Pro`), each with its price limit (before tax). Comment a line out to stop watching it. |
 | `filters.min_price` | anything cheaper is treated as an accessory (stands, covers, fans), never alerted |
 | `filters.first_party_only` | ignore marketplace / third-party sellers |
 | `retailers` | turn each store on or off |
@@ -101,8 +106,9 @@ Each run (`run_once` in `ps5_watch.py`):
 1. Every enabled store returns a list of `Offer`s: title, price, URL, in stock or not,
    sold by the store or not, and a short stock note.
 2. `product_of(title)` decides which product a listing is (or none). Each product has its own
-   title matcher (`is_ps5_pro`, `is_ps5_digital`) that excludes look-alikes such as
-   refurbished/open-box units, other models and accessories.
+   title matcher (`is_ps5_pro`, `is_ps5_digital`, `is_ps5_disc`) that excludes look-alikes such
+   as refurbished/open-box units, other models and accessories (disc drives, SSDs "for PS5
+   consoles", the PlayStation Portal, racing wheels).
 3. `passes_filters` applies the price limits and the seller rule.
 4. A listing that passes and is in stock, and wasn't on the previous run, triggers the alarm and
    the phone alert, and starts a history entry. When it's gone, the history entry is closed.
@@ -132,6 +138,9 @@ add it to `HTTP_RETAILERS` (plain requests) or `BROWSER_RETAILERS` (needs the Ed
 - It only runs while the computer is **on, awake and logged in**. No checks happen while it sleeps.
 - Stores change their pages. If a store shows **FAILED** on the status screen for a while, its
   page probably changed and its check function needs updating.
+- Staples and Walmart show their bot check when one visit opens several pages, so Walmart
+  runs a single search per visit and Staples opens one product page per visit, taking turns
+  (Digital, Disc, Pro). Watching more products at Staples makes each page's turn come less often.
 - Checking too often can get you blocked. Canada Computers once refused its search page to
   this connection after a few hours of 5-minute checks, which is why its category page is used
   (with the search as a backup) and why failing stores slow down by themselves.

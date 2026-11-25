@@ -24,6 +24,8 @@ CHEAP_ACCESSORIES = [
     ("3-in-1 Vertical Stand with 2 Cooling Fan and Charging Station Dock for PS5 Console and PlayStation 5 Digital Edition", 45.99),
     ("PS5 Stand with 3-Speed Fan, RGB Light, Controller Charging Dock, Digital Edition", 39.99),
     ("RGB LED Light Strip for PS5 Disc & Digital Edition Consoles", 19.99),
+    ("PlayStation 5 Slim Edition Console Cover - Cobalt Blue", 69.99),   # reads like a Disc
+    ("Multifunctional Cooling Stand for PS5 Pro", 49.99),                # reads like a Pro
 ]
 
 SHOULD_NOT_MATCH = [
@@ -37,9 +39,55 @@ SHOULD_NOT_MATCH = [
     "Horizontal Stand for PS5 Disc & Digital Editions, No Screws Removable Stable PS5 Base Stand Anti-Slip",
     "PlayStation 5 Digital Edition Call of Duty: Black Ops 6 Bundle (Slim Model CFI-2000) – (Open Box)",
     "Certified Refurbished - PlayStation 5 Slim Digital Edition Console",
+    "Sony Disc Drive for PlayStation 5 Digital Edition Console",           # Staples
+    "Western Digital SN850P NVMe SSD for PS5 consoles - 2TB - Black",      # Staples
 ]
 
-CFG = {"filters": {"max_price": {"PS5 Digital": 850, "PS5 Pro": 1200}, "min_price": 300,
+DISC_TITLES = [  # the regular PS5 with a disc drive; stores rarely say "disc"
+    "PlayStation 5 Slim 1TB Console",                    # Best Buy
+    "Sony PlayStation 5 Slim Console",                   # Staples
+    "SONY PlayStation®5 Slim Console",
+    "PlayStation®5 Console (slim)",
+    "PlayStation 5 Disc Edition Console (slim)",
+    "PS5 Slim Standard Edition",
+    "PlayStation 5 Console – Call of Duty Black Ops 6 Bundle",
+    "PS5 Slim Console Bundle with Digital Game Code",
+    "PlayStation 5 Console with Disc Drive",
+    "PlayStation 5 Digital Edition + Disc Drive Bundle",       # a disc console in effect
+    "PS5 Slim Digital Edition Console with PS5 Disc Drive",
+    "PlayStation®5 Disc Console Slim – 1TB",                                    # Walmart
+    "PlayStation®5 Console – Ghost of Yōtei Gold  Limited Edition Bundle",     # Walmart
+    "PlayStation®5 Console 1TB – Fortnite Flowering Chaos Bundle",             # Walmart
+    "PlayStation 5 Slim Console + PlayStation 5 DualSense Wireless Controller Galactic Purple",
+]
+NOT_DISC = [  # mention the PS5 (and often "console"), but are not a new disc console
+    "PlayStation 5 Slim Digital Edition 825GB Console",
+    "SONY PlayStation®5 Slim Console - Digital Edition",
+    "PlayStation 5 Pro Console",
+    "Sony Disc Drive for PlayStation 5 Digital Edition Console",
+    "Western Digital SN850P NVMe SSD for PS5 consoles - 2TB - Black",
+    "WD_BLACK 2TB SN850P NVMe M.2 SSD Officially Licensed Storage Expansion for PS5 Consoles, up to 7300MB/s",
+    "PlayStation Portal Remote Player (PS5) - White",
+    "Thrustmaster T598 Direct Axial Drive Racing Wheel & Pedal Set for PS5/PS4/PC",
+    "Certified Refurbished - PlayStation 5 Slim 1TB Console",
+    "Open Box - PlayStation 5 Ghost of Yōtei Black Limited Edition Console only",
+    "God Of War Ragnarok (Replen) for Playstation 5 [Disc]",
+    "Spider-Man 2 Collector's Edition (PS5) - Open Box (Console Not Included)",
+    "Cooling Fan Stand for PS5 Console",
+    "PS5 Cooling Fan with LED Light, PS5 Accessories Cooler Fan for Playstation 5 Digital & Disc Edition Console",
+    "Bigly Brothers PS5 Gaming Bundle Pro – Wireless Headset, Wireless Controller",
+    "Sony PlayStation 5 DualSense Wireless Controller - White",
+    "PlayStation 5 Media Remote",
+    "Disc Drive For PlayStation 5 Digital Edition Console / PlayStation 5 Pro Console - White",
+    "PS5 Disc Drive Add-On for PS5 Digital Edition Slim CFI-2000 and PS5 Pro 4K Ultra HD Blu-ray",
+    "Disc Drive - PlayStation 5 Digital Edition Console",
+    "PlayStation®5 Pro Console PLUS Disc Drive For PS5® Digital Edition Consoles, Bundle",
+    "Sony - PlayStation 5 (PS5) Disc Console Slim - White (Refurbished)",       # Walmart
+    "Sony 3006634 PlayStation 5 Console - White (Refurbished)",                 # Walmart
+    "PlayStation®5 Digital Edition – 825GB",                                    # Walmart (Digital)
+]
+
+CFG = {"filters": {"max_price": {"PS5 Digital": 850, "PS5 Disc": 950, "PS5 Pro": 1200}, "min_price": 300,
                    "first_party_only": True}}
 
 PRO_TITLES = [  # real listings seen at Best Buy / Canada Computers / Walmart
@@ -69,6 +117,20 @@ def test_products_never_mixed():
     assert not passes_filters(offer("PlayStation 5 Pro Console", 1200.00), CFG)[0]
     assert not passes_filters(offer(SHOULD_MATCH[0], 1099.99), CFG)[0]   # Digital over $850
     assert not passes_filters(offer("Vertical Stand For PlayStation 5 / PlayStation 5 Pro Console", 39.99), CFG)[0]
+
+
+def test_disc_console():
+    for t in DISC_TITLES:
+        assert product_of(t) == "PS5 Disc", t
+    for t in NOT_DISC:
+        assert product_of(t) != "PS5 Disc", t
+    cfg = {"filters": {"max_price": {"PS5 Digital": 850, "PS5 Disc": 950, "PS5 Pro": 1250},
+                       "min_price": 300, "first_party_only": True}}
+    assert passes_filters(offer(DISC_TITLES[0], 819.99), cfg)[0]
+    assert not passes_filters(offer(DISC_TITLES[0], 999.99), cfg)[0]          # over $950
+    assert not passes_filters(offer(DISC_TITLES[0], 819.99, False), cfg)[0]   # reseller
+    assert passes_filters(offer(SHOULD_MATCH[0], 749.99), cfg)[0]             # Digital 825GB
+    assert passes_filters(offer(SHOULD_MATCH[1], 749.99), cfg)[0]             # Digital (1TB slim)
 
 
 def offer(title, price, first_party=True):
@@ -403,6 +465,46 @@ def test_cheapest_in_stock_price():
         del ps5_watch.RETAILERS["fake"], ps5_watch.HTTP_RETAILERS["fake"]
 
 
+def test_staples_pages_in_turns():
+    """Staples checks one page per visit. A console in stock on one page must not be
+    counted as sold out (and re-alerted) because the next visit checked another page."""
+    import tempfile
+    from pathlib import Path
+    import ps5_watch
+
+    sent, turn = [], {"page": "digital"}
+    pages = {"digital": Offer("Staples", "3140351", "Sony PlayStation 5 Digital Edition Console", 749.99, "http://d", True),
+             "disc": Offer("Staples", "3140352", "Sony PlayStation 5 Slim Console", 819.99, "http://s", False)}
+
+    def fake(s, q=None):
+        return [pages[turn["page"]]]
+
+    tmp = Path(tempfile.mkdtemp())
+    orig = (ps5_watch.notify, ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV,
+            ps5_watch.BROWSER_RETAILERS.pop("staples"))
+    ps5_watch.notify = lambda cfg, title, *a, **k: sent.append(title)
+    ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV = tmp / "state.json", tmp / "history.csv"
+    ps5_watch.HTTP_RETAILERS["staples"] = fake
+    cfg = {**PRO_ONLY, "filters": {**PRO_ONLY["filters"],
+                                    "max_price": {"PS5 Digital": 850, "PS5 Disc": 950, "PS5 Pro": 1250}},
+           "retailers": {"staples": True}}
+    try:
+        ps5_watch.run_once(cfg); assert len(sent) == 1, sent          # Digital in stock: alert
+        turn["page"] = "disc"
+        ps5_watch.run_once(cfg)
+        st = ps5_watch.load_state()
+        assert st["in_stock"]["staples:3140351"] is True              # not "vanished"
+        c = st["last_check"]["staples"]
+        assert c["listings"] == {"PS5 Digital": 1, "PS5 Disc": 1, "PS5 Pro": 0}, c["listings"]
+        assert [s["product"] for s in c["in_stock"]] == ["PS5 Digital"]  # kept for --status
+        assert set(c["checked"]) == {"PS5 Digital", "PS5 Disc"}
+        turn["page"] = "digital"
+        ps5_watch.run_once(cfg); assert len(sent) == 1, sent          # still in stock: no repeat
+    finally:
+        ps5_watch.notify, ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV, ps5_watch.BROWSER_RETAILERS["staples"] = orig
+        del ps5_watch.HTTP_RETAILERS["staples"]
+
+
 def test_crash_is_reported():
     """A whole check crashing warns the phone (at most hourly) and is cleared on success."""
     import tempfile
@@ -432,6 +534,7 @@ if __name__ == "__main__":
     test_titles()
     test_price_and_seller()
     test_products_never_mixed()
+    test_disc_console()
     test_bestbuy_pickup_only()
     test_alert_only_on_restock()
     test_pro_only()
@@ -439,5 +542,6 @@ if __name__ == "__main__":
     test_canadacomputers_backup_page()
     test_vanished_listing_alerts_again()
     test_cheapest_in_stock_price()
+    test_staples_pages_in_turns()
     test_crash_is_reported()
     print("all matcher tests passed")

@@ -11,8 +11,9 @@ filters:
   # Only the products listed here are watched. Alert only if the listed
   # price (CAD, before tax) is under this.
   max_price:
+    PS5 Digital: 850     # any Digital Edition (825GB or 1TB); regular price $749.99
+    PS5 Disc: 950        # with disc drive; regular price $819.99
     PS5 Pro: 1250        # regular price $1,099.99; room for bundles
-    # PS5 Digital: 850   # regular price $749.99
   min_price: 300         # anything cheaper is an accessory, not the product itself
   first_party_only: true # ignore marketplace / third-party sellers where the site tells us
 

@@ -1,4 +1,4 @@
-"""PS5 stock watcher (PS5 Pro and/or PS5 Digital Edition) for Canadian retailers.
+"""PS5 stock watcher (PS5 Digital Edition, PS5 with disc drive, PS5 Pro) for Canadian retailers.
 Which consoles are watched is set by filters.max_price in config.yaml.
 
 Checks each retailer once and sends an ntfy push notification when a matching
@@ -79,14 +79,42 @@ def normalize(title: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+# "Digital" meaning the Digital Edition console, not "Western Digital" (SSD maker) or a
+# "digital game code" in a bundle.
+DIGITAL_EDITION_RE = re.compile(r"(?<!western )digital(?!\s*(game|code|voucher|download|copy|content))")
+
+# Accessories that mention the console and can cost $300+ (SSDs, wheels, Portal, VR2...).
+WITH_DISC_DRIVE = r"(with|\+|plus|&|and)\s*(a\s*)?(sony\s*)?(ps5\s*)?disc drive"
+ACCESSORY_RE = re.compile(r"\bssd\b|nvme|solid state|hard drive|external drive|"
+                          r"^(sony )?(ps5 )?disc drive|disc drive (for|add)|"
+                          r"portal|\bvr2?\b|racing wheel|"
+                          r"not included|\bfor (the )?(sony )?(playstation\s*5|ps\s*5)|compatible")
+
+
 def is_ps5_digital(title: str) -> bool:
-    """True for the PS5 Digital Edition console or a bundle that includes it."""
+    """True for the PS5 Digital Edition console (any storage size: 825GB or 1TB) or a
+    bundle that includes it."""
     t = normalize(title)
     is_ps5 = bool(re.search(r"playstation\s*5|\bps5\b", t))
-    return is_ps5 and "digital" in t and not _EXCLUDE_RE.search(t)
+    return (is_ps5 and bool(DIGITAL_EDITION_RE.search(t)) and not _EXCLUDE_RE.search(t)
+            and not ACCESSORY_RE.search(t))
 
 
 NOT_NEW_RE = re.compile(r"refurbished|renewed|open box|\bused\b|pre-?owned")
+
+
+def is_ps5_disc(title: str) -> bool:
+    """True for the regular PS5 with a disc drive (Standard / Disc Edition, any storage
+    size) or a bundle that includes it. Store titles rarely say "disc", e.g.
+    "PlayStation 5 Slim 1TB Console", so the word "console" (or "disc/standard edition")
+    is required, and anything Digital, Pro, an accessory or not new is excluded."""
+    t = normalize(title)
+    return (bool(re.search(r"playstation\s*5|\bps\s*5\b", t))
+            and bool(re.search(r"\bconsole\b|disc edition|standard edition|digital edition\s*" + WITH_DISC_DRIVE, t))
+            # a Digital Edition bundled with the disc drive is a disc console too
+            and (not DIGITAL_EDITION_RE.search(t) or bool(re.search(WITH_DISC_DRIVE, t)))
+            and not re.search(r"\bpro\b", t)
+            and not ACCESSORY_RE.search(t) and not NOT_NEW_RE.search(t))
 
 
 def is_ps5_pro(title: str) -> bool:
@@ -98,7 +126,7 @@ def is_ps5_pro(title: str) -> bool:
     return bool(re.search(r"(playstation\s*5|\bps\s*5)(\s*slim)?\s*[-:]?\s*pro\b", t)) and not NOT_NEW_RE.search(t)
 
 
-PRODUCTS = ["PS5 Digital", "PS5 Pro"]  # every console this program knows about
+PRODUCTS = ["PS5 Digital", "PS5 Disc", "PS5 Pro"]  # every console this program knows about
 
 
 def watched(cfg: dict) -> list[str]:
@@ -107,11 +135,13 @@ def watched(cfg: dict) -> list[str]:
 
 
 def product_of(title: str) -> str | None:
-    """Which watched console a listing is: "PS5 Digital", "PS5 Pro" or None."""
+    """Which console a listing is: "PS5 Digital", "PS5 Disc", "PS5 Pro" or None."""
     if is_ps5_pro(title):
         return "PS5 Pro"
     if is_ps5_digital(title):
         return "PS5 Digital"
+    if is_ps5_disc(title):
+        return "PS5 Disc"
     return None
 
 
@@ -161,17 +191,23 @@ BESTBUY_PICKUP_STORES = (
 
 # Search words per store and console. Only the watched consoles' searches are run.
 SEARCHES = {
-    "bestbuy": {"PS5 Digital": ("ps5 digital edition", "playstation 5 digital edition bundle"),
-                "PS5 Pro": ("ps5 pro console", "playstation 5 pro bundle")},
-    "canadacomputers": {p: (p,) for p in ("PS5 Digital", "PS5 Pro")},  # products, not search words
-    "walmart": {"PS5 Digital": ("ps5 digital edition",), "PS5 Pro": ("ps5 pro console",)},
+    # Best Buy's search takes ~9 s per query and each of these returns all the consoles,
+    # so one query per console is plenty.
+    "bestbuy": {"PS5 Digital": ("playstation 5 digital edition bundle",),
+                "PS5 Disc": ("playstation 5 console bundle",),
+                "PS5 Pro": ("playstation 5 pro bundle",)},
+    "canadacomputers": {p: (p,) for p in PRODUCTS},  # products, not search words
+    # Walmart's bot check blocks several searches in one visit; one search lists every model.
+    "walmart": {p: ("ps5 console",) for p in PRODUCTS},
     "amazon": {"PS5 Digital": ("playstation 5 digital edition console",),
+               "PS5 Disc": ("playstation 5 console slim",),
                "PS5 Pro": ("playstation 5 pro console",)},
 }
 
 
 def queries_for(key: str, cfg: dict) -> tuple[str, ...]:
-    return tuple(q for p in watched(cfg) for q in SEARCHES.get(key, {}).get(p, ()))
+    # dict.fromkeys: a search shared by several consoles runs once
+    return tuple(dict.fromkeys(q for p in watched(cfg) for q in SEARCHES.get(key, {}).get(p, ())))
 
 
 def check_bestbuy(session: requests.Session, queries=("ps5 digital edition", "ps5 pro console")) -> list[Offer]:
@@ -237,7 +273,8 @@ def check_bestbuy(session: requests.Session, queries=("ps5 digital edition", "ps
 CC_PLAYSTATION_PAGE = "https://www.canadacomputers.com/en/877/playstation"
 
 
-CC_SEARCH_WORDS = {"PS5 Digital": "ps5 digital", "PS5 Pro": "ps5 pro"}  # backup only
+CC_SEARCH_WORDS = {"PS5 Digital": "ps5 digital", "PS5 Disc": "ps5 slim console",
+                   "PS5 Pro": "ps5 pro"}  # backup only
 
 
 def _cc_cards(session: requests.Session, url: str, params=None) -> list:
@@ -455,6 +492,7 @@ def _amazon_search(page, query: str) -> list[Offer]:
 # consoles' pages are opened.
 STAPLES_PRODUCTS = {
     "PS5 Digital": ("https://www.staples.ca/products/3140351-en-sony-playstation-5-digital-edition-console",),
+    "PS5 Disc": ("https://www.staples.ca/products/3140352-en-sony-playstation-5-slim-console",),
     "PS5 Pro": ("https://www.staples.ca/products/3103551-en-sony-playstation-5-pro-console",),
 }
 SEARCHES["staples"] = STAPLES_PRODUCTS  # "searches" here are the product page URLs
@@ -761,9 +799,12 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
 
         # A listing that was in stock and has now vanished from the results (Amazon hides
         # sold-out items) counts as sold out, so its next restock alerts again.
+        # (Not Staples: its pages are checked in turns, so a page not visited this time
+        # hasn't vanished.)
         seen_keys = {f"{key}:{o.id}" for o in offers}
         for sk, avail in list(state["in_stock"].items()):
-            if avail and sk.startswith(key + ":") and sk not in seen_keys and not dry_run:
+            if (avail and sk.startswith(key + ":") and sk not in seen_keys and not dry_run
+                    and key != "staples"):
                 log.info("no longer listed (counted as sold out): %s", sk)
                 h = next((h for h in reversed(state.get("history", []))
                           if h["key"] == sk and h.get("end") is None), None)
@@ -781,9 +822,20 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
             if o.in_stock and o.price is not None and is_console_listing(o, cfg) and (
                     p not in cheapest or o.price < cheapest[p]["price"]):
                 cheapest[p] = {"price": o.price, "reseller": not o.first_party}
+        checked = {p: time.time() for p in {product_of(o.title) for o in offers} if p}
+        prev = state.get("last_check", {}).get(key) or {}
+        if key == "staples" and prev.get("ok"):
+            # Staples checks one page per visit: keep the other pages' last results.
+            for p in watched(cfg):
+                if p not in checked and p in prev.get("checked", {}):
+                    checked[p] = prev["checked"][p]
+                    listings[p] = prev.get("listings", {}).get(p, 0)
+                    found += [s for s in prev.get("in_stock", []) if s.get("product") == p]
+                    if p in prev.get("cheapest", {}):
+                        cheapest[p] = prev["cheapest"][p]
         state.setdefault("last_check", {})[key] = {
             "time": time.time(), "ok": True, "products": len(offers),
-            "listings": listings, "in_stock": found, "cheapest": cheapest}
+            "listings": listings, "in_stock": found, "cheapest": cheapest, "checked": checked}
         log.info("%s: %d products checked (%s)", key, len(offers),
                  ", ".join(f"{n} {p} listings" for p, n in listings.items()))
 
@@ -806,7 +858,15 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
                     ctx = browser.new_context(locale="en-CA", viewport={"width": 1280, "height": 800})
                     page = ctx.new_page()
                     for key in browser_keys:
-                        process(key, lambda: BROWSER_RETAILERS[key](page, queries_for(key, cfg)))
+                        qs = queries_for(key, cfg)
+                        if key == "staples" and len(qs) > 1:
+                            # Staples' bot check blocks a second product page in the same visit,
+                            # so each visit checks ONE page, taking turns (state "staples_turn").
+                            turn = state.get("staples_turn", 0) % len(qs)
+                            if not dry_run:
+                                state["staples_turn"] = turn + 1
+                            qs = (qs[turn],)
+                        process(key, lambda: BROWSER_RETAILERS[key](page, qs))
                 finally:
                     browser.close()
         except Exception as e:
@@ -924,8 +984,17 @@ def _status_table(cfg: dict, state: dict, product: str) -> None:
             print(f"  {name:<18}{'not yet':<26}{DIM}waiting for first check{RESET}")
             continue
         limit = (browser_every * 2 + 10 if key in BROWSER_RETAILERS else 15) * 60
-        when = _ago(c["time"])
-        if time.time() - c["time"] > limit:
+        t = c["time"]
+        if key == "staples" and c["ok"] and len(STAPLES_PRODUCTS) > 1:
+            # one page per visit, in turns: show when THIS console's page was checked
+            pages = sum(p in STAPLES_PRODUCTS for p in watched(cfg))
+            limit = (browser_every * (pages + 1) + 10) * 60
+            if product not in c.get("checked", {}):
+                print(f"  {name:<18}{'not yet':<26}{DIM}Staples checks one page per visit, in turns{RESET}")
+                continue
+            t = c["checked"][product]
+        when = _ago(t)
+        if time.time() - t > limit:
             when = f"{YELLOW}{when}{RESET}" + " " * max(0, 26 - len(when))
         else:
             when = f"{when:<26}"
