@@ -651,11 +651,32 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
     failing = state.setdefault("failing", {})  # store -> {"since": time, "alerted": bool}
     matches_in_stock = 0
 
+    def warn_if_failing_long(key) -> None:
+        """One phone warning once a store has been failing for failure_alert_minutes,
+        on the first run after that - whether or not the store is tried on that run."""
+        f = failing.get(key)
+        if dry_run or not f or f["alerted"] or time.time() - f["since"] < alert_after:
+            return
+        n = state["failures"].get(key, 0)
+        err = (state.get("last_check", {}).get(key) or {}).get("error", "?")
+        try:
+            notify(cfg, f"PS5 watcher: {key} check is failing",
+                   f"The {key} check has failed {n} times in a row since "
+                   f"{time.strftime('%I:%M %p', time.localtime(f['since'])).lstrip('0')}.\n"
+                   f"Last error: {err}\n"
+                   "It is now checked less often (at most once an hour) until it works again; "
+                   "you'll get a message when it does.",
+                   priority="default", tags="warning")
+            f["alerted"] = True
+        except Exception as ne:
+            log.error("could not send failure alert: %s", ne)
+
     def slowed_down(key) -> bool:
         until = None if dry_run else backoff_until(state, key)
         if until and time.time() < until:
             log.info("%s: slowed down after %d failures, next try %s", key,
                      state["failures"][key], time.strftime("%I:%M %p", time.localtime(until)))
+            warn_if_failing_long(key)
             return True
         return False
 
@@ -677,21 +698,9 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
             state.setdefault("last_check", {})[key] = {
                 "time": time.time(), "ok": False, "error": str(e).splitlines()[0][:150]}
             log.warning("%s check failed (%d in a row): %s", key, n, e)
-            if dry_run:
-                return
-            f = failing.setdefault(key, {"since": time.time(), "alerted": False})
-            if not f["alerted"] and time.time() - f["since"] >= alert_after:
-                try:
-                    notify(cfg, f"PS5 watcher: {key} check is failing",
-                           f"The {key} check has failed {n} times in a row since "
-                           f"{time.strftime('%I:%M %p', time.localtime(f['since'])).lstrip('0')}.\n"
-                           f"Last error: {e}\n"
-                           "It is now checked less often (at most once an hour) until it works again; "
-                           "you'll get a message when it does.",
-                           priority="default", tags="warning")
-                    f["alerted"] = True
-                except Exception as ne:
-                    log.error("could not send failure alert: %s", ne)
+            if not dry_run:
+                failing.setdefault(key, {"since": time.time(), "alerted": False})
+                warn_if_failing_long(key)
             return
 
         if not dry_run:

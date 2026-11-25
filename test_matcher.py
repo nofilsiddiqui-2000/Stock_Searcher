@@ -289,8 +289,10 @@ def test_failing_store_slows_down():
         rewind(15); ps5_watch.run_once(cfg); assert len(calls) == 4   # next wait is 30 min
         rewind(15); ps5_watch.run_once(cfg); assert len(calls) == 5
         assert sent == []                                    # failing for under an hour: no warning yet
+        st = ps5_watch.load_state(); st["failing"]["fake"]["since"] -= 3600; ps5_watch.save_state(st)
+        ps5_watch.run_once(cfg); assert len(calls) == 5      # an hour in, store not due for a retry...
+        assert sent == ["PS5 watcher: fake check is failing"], sent   # ...but the warning goes out anyway
         rewind(60); ps5_watch.run_once(cfg); assert len(calls) == 6
-        assert sent == ["PS5 watcher: fake check is failing"], sent   # warned once, after an hour
         rewind(60); ps5_watch.run_once(cfg); assert len(calls) == 7   # then hourly
         assert len(sent) == 1                                # no repeat warning
         blocked["value"] = False
