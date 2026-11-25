@@ -260,8 +260,8 @@ def test_pro_only():
         del ps5_watch.RETAILERS["fake"], ps5_watch.HTTP_RETAILERS["fake"]
 
 
-def test_bestbuy_pickup_only():
-    """Sold out online but on the shelf at a Montreal store must count as in stock."""
+def test_bestbuy_online_only():
+    """Only online stock counts: on the shelf in a store but sold out online is NOT in stock."""
     import ps5_watch
 
     class Resp:
@@ -280,35 +280,40 @@ def test_bestbuy_pickup_only():
             if "search" in url:
                 return Resp({"products": [{"sku": s, "name": SHOULD_MATCH[0], "salePrice": 749.99,
                                            "productUrl": "/p/" + s} for s in ("1", "2", "3")]})
-            assert params.get("locations"), "pickup stores must be sent"
-            return Resp({"availabilities": [avail("1", False, [("LaSalle", 2), ("Anjou", 0)]),
-                                            avail("2", False, [("LaSalle", 0)]),
+            assert "locations" not in params, "no pickup stores are asked for"
+            return Resp({"availabilities": [avail("1", False, [("Montreal Eaton Centre", 2)]),
+                                            avail("2", False, []),
                                             avail("3", True, [])]})
 
     got = {o.id: o for o in ps5_watch.check_bestbuy(Session())}
-    assert got["1"].in_stock and "LaSalle" in got["1"].stock_note and "Anjou" not in got["1"].stock_note
+    assert not got["1"].in_stock                        # in a store only (the 3 PM / 6 PM Pro alerts)
     assert not got["2"].in_stock                        # sold out everywhere
-    assert got["3"].in_stock                            # online only
+    assert got["3"].in_stock and got["3"].stock_note == "online: InStock"   # online
 
 
-def test_canadacomputers_montreal_pickup():
+def test_canadacomputers_online_only():
+    """Sold out online but in stock at a store: NOT in stock, and no product page is opened."""
     import ps5_watch
 
-    def store(name, n):
-        return (f'<div class="row"><span class="col-3 fm-SegoeUI-Bold">{name}</span>'
-                f'<span class="ml-2 shop-online-box f-18">{n}</span></div>')
+    def card(n, online):
+        return (f'<div class="js-product" id="product_card_{n}"><h2 class="product-title">'
+                f'<a href="https://cc/{n}.html">SONY PlayStation®5 Slim Console - Digital Edition</a></h2>'
+                f'<div class="product-description" data-final_price="749.99"></div>'
+                f'<div class="available-tag"><span>{online}</span><span>In-Store - Available</span></div></div>')
 
-    page = ('<div id="checkothertores">' + store("Montreal", 0) + store("Brossard", 4)
-            + store("Laval", 0) + store("Kingston", 1) + "</div>")
+    asked = []
 
     class Resp:
-        text = page
+        text = card(1, "Online - Sold Out") + card(2, "Online - Available to Ship")
         def raise_for_status(self): pass
 
     class Session:
-        def get(self, url, **k): return Resp()
+        def get(self, url, **k):
+            asked.append(url); return Resp()
 
-    assert ps5_watch.cc_montreal_stock(Session(), "http://x") == {"Brossard": 4}  # Kingston ignored
+    got = {o.id: o for o in ps5_watch.check_canadacomputers(Session())}
+    assert not got["1"].in_stock and got["2"].in_stock
+    assert asked == [ps5_watch.CC_PLAYSTATION_PAGE]          # one request, no store lookups
 
 
 def test_failing_store_slows_down():
@@ -530,12 +535,12 @@ def test_crash_is_reported():
 
 
 if __name__ == "__main__":
-    test_canadacomputers_montreal_pickup()
+    test_canadacomputers_online_only()
     test_titles()
     test_price_and_seller()
     test_products_never_mixed()
     test_disc_console()
-    test_bestbuy_pickup_only()
+    test_bestbuy_online_only()
     test_alert_only_on_restock()
     test_pro_only()
     test_failing_store_slows_down()

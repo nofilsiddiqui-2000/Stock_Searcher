@@ -181,12 +181,7 @@ def parse_price(text) -> float | None:
 # Retailers
 # --------------------------------------------------------------------------
 
-# Best Buy stores checked for in-store pickup: the 42 stores Best Buy itself lists
-# as nearby for Montreal (island, Laval, South Shore, North Shore, West Island).
-BESTBUY_PICKUP_STORES = (
-    "270|967|274|286|252|288|651|280|268|276|301|264|269|284|279|273|969|962|282|281|251|"
-    "84|283|971|305|265|968|266|272|970|285|681|311|978|297|267|663|290|298|287|674|296"
-)
+# Only ONLINE stock counts at every store (in-store pickup is ignored).
 
 
 # Search words per store and console. Only the watched consoles' searches are run.
@@ -243,8 +238,7 @@ def check_bestbuy(session: requests.Session, queries=("ps5 digital edition", "ps
     if skus:
         r = session.get("https://www.bestbuy.ca/ecomm-api/availability/products",
                         params={"accept": "application/vnd.bestbuy.standardproduct.v1+json",
-                                "accept-language": "en-CA", "skus": "|".join(skus),
-                                "locations": BESTBUY_PICKUP_STORES},
+                                "accept-language": "en-CA", "skus": "|".join(skus)},
                         timeout=60)
         r.raise_for_status()
         for a in r.json().get("availabilities", []):
@@ -252,16 +246,9 @@ def check_bestbuy(session: requests.Session, queries=("ps5 digital edition", "ps
             if not o:
                 continue
             ship = a.get("shipping") or {}
-            pickup = a.get("pickup") or {}
-            stores = [l.get("name", "?") for l in pickup.get("locations") or []
-                      if l.get("hasInventory") and (l.get("quantityOnHand") or 0) > 0]
-            online_ok = bool(ship.get("purchasable"))
-            pickup_ok = bool(pickup.get("purchasable")) and bool(stores)
-            o.in_stock = online_ok or pickup_ok
-            o.stock_note = f"online: {ship.get('status')}, Montreal-area pickup: {pickup.get('status')}"
-            if pickup_ok:
-                shown = ", ".join(stores[:5]) + (f" +{len(stores) - 5} more" if len(stores) > 5 else "")
-                o.stock_note += f" at {len(stores)} store(s): {shown}"
+            # online only: "purchasable" for shipping (in-store pickup is ignored)
+            o.in_stock = bool(ship.get("purchasable"))
+            o.stock_note = f"online: {ship.get('status')}"
             if a.get("sellerId") and a["sellerId"] != "bbyca":
                 o.first_party = False
     return list(offers.values())
@@ -288,8 +275,8 @@ def _cc_cards(session: requests.Session, url: str, params=None) -> list:
 
 
 def check_canadacomputers(session: requests.Session, queries=None) -> list[Offer]:
-    """queries = the watched consoles, whose Montreal store stock is looked up when
-    sold out online (default: all). The one category page covers every console."""
+    """queries = the watched consoles (default: all), used only for the backup search.
+    The one category page covers every console. Online stock only."""
     products = set(queries or PRODUCTS)
     try:
         cards = _cc_cards(session, CC_PLAYSTATION_PAGE)
@@ -323,51 +310,14 @@ def check_canadacomputers(session: requests.Session, queries=None) -> list[Offer
         online = next((l for l in lines if "online" in l.lower()), "")
         online_ok = bool(online) and not re.search(r"sold out|not available|unavailable", online.lower())
 
-        offer = Offer(
+        offers.append(Offer(
             retailer="Canada Computers",
             id=card.get("id", "").replace("product_card_", ""),
             title=title, price=price, url=url,
-            in_stock=online_ok,
+            in_stock=online_ok,  # online only (in-store stock is ignored)
             stock_note=" | ".join(lines),
-        )
-        # Sold out online? The product page lists stock at every store - look at Montreal's.
-        # (Only for watched consoles; accessories under $300 can never trigger an alert.)
-        if (not online_ok and product_of(title) in products and url
-                and (price is None or price >= 300)):
-            try:
-                stores = cc_montreal_stock(session, url)
-            except Exception as e:
-                log.warning("Canada Computers store stock lookup failed for %s: %s", title, e)
-                offer.stock_note += " | Montreal store stock: could not check"
-                stores = {}
-            if stores:
-                offer.in_stock = True
-                offer.stock_note = ("online: sold out, Montreal-area pickup: "
-                                    + ", ".join(f"{n} at {s}" for s, n in stores.items()))
-        offers.append(offer)
+        ))
     return offers
-
-
-CC_MONTREAL_STORES = ("Montreal", "Brossard", "Marche Central", "Laval")
-
-
-def cc_montreal_stock(session: requests.Session, url: str) -> dict[str, int]:
-    """Units on the shelf at Montreal-area Canada Computers stores, e.g. {"Brossard": 4}."""
-    r = session.get(url, timeout=TIMEOUT)
-    r.raise_for_status()
-    doc = lxml_html.fromstring(r.text)
-    box = doc.xpath("//*[@id='checkothertores']")
-    if not box:
-        raise RuntimeError(f"Canada Computers product page had no store list (format changed?): {url}")
-    stock = {}
-    for name_el in box[0].xpath(".//span[contains(@class,'col-3')]"):
-        name = name_el.text_content().strip()
-        count = name_el.xpath("following-sibling::span[contains(@class,'shop-online-box')][1]")
-        if name in CC_MONTREAL_STORES and count:
-            n = int(re.sub(r"\D", "", count[0].text_content()) or 0)
-            if n > 0:
-                stock[name] = n
-    return stock
 
 
 # ---- Browser-based retailers ---------------------------------------------

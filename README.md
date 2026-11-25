@@ -27,14 +27,17 @@ reused for other hard-to-find products; see [Reusing it](#reusing-it-for-other-p
   phone warning, and another message when it works again. One store failing never stops the others.
 
 ## Stores
-| Store | How it's checked | In-store pickup | Every |
-|---|---|---|---|
-| Best Buy Canada | the site's own JSON search + availability API; marketplace sellers ignored | yes, 42 Montreal-area stores | 5 min |
-| Canada Computers | PlayStation category page (site search as backup) + product page store list | yes, 4 Montreal-area stores | 5 min |
-| Staples.ca | fixed product pages; must say "Delivery available". **One page per visit, in turns** | no | 20 min (each console's page about once an hour) |
-| Walmart.ca | one search page for every model; only listings **sold by Walmart** | no | 20 min |
-| Amazon.ca | search limited to **sold by Amazon.ca** | no | 20 min |
-| EB Games | not supported: its bot check blocks automated browsers | – | – |
+**Only online stock counts** (can be ordered for delivery). Stock sitting in a physical store
+is ignored everywhere.
+
+| Store | How it's checked | Every |
+|---|---|---|
+| Best Buy Canada | the site's own JSON search + availability API ("purchasable" for shipping); marketplace sellers ignored | 5 min |
+| Canada Computers | PlayStation category page (site search as backup); its "Online" availability line | 5 min |
+| Staples.ca | fixed product pages; must say "Delivery available". **One page per visit, in turns** | 20 min (each console's page about once an hour) |
+| Walmart.ca | one search page for every model; only listings **sold by Walmart** | 20 min |
+| Amazon.ca | search limited to **sold by Amazon.ca** | 20 min |
+| EB Games | not supported: its bot check blocks automated browsers | – |
 
 Staples, Walmart and Amazon block plain requests, so they are opened in a normal, visible
 Microsoft Edge window (Playwright) for about a minute. **The watcher never tries to get
@@ -126,9 +129,7 @@ Everything product-specific is in `ps5_watch.py`, near the top of each section:
    in another category.
 3. **Set the price**: add `<product name>: <limit>` under `filters.max_price` in `config.yaml`, and
    adjust `min_price` so accessories stay out.
-4. **Pickup stores** (optional): `BESTBUY_PICKUP_STORES` (Best Buy store IDs) and
-   `CC_MONTREAL_STORES` are set to Montreal; change them to your area.
-5. Run `python test_matcher.py` and `python ps5_watch.py --dry-run` and compare against the
+4. Run `python test_matcher.py` and `python ps5_watch.py --dry-run` and compare against the
    stores' websites before relying on it.
 
 New store: write a `check_<store>(session_or_page, queries)` function that returns `Offer`s and
