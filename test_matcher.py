@@ -341,6 +341,61 @@ def test_canadacomputers_backup_page():
         assert "category page" in str(e) and "search" in str(e)
 
 
+def test_vanished_listing_alerts_again():
+    """In stock, then gone from the results (Amazon hides sold-out items), then back:
+    the comeback must alert again."""
+    import tempfile
+    from pathlib import Path
+    import ps5_watch
+
+    listed, sent = {"value": True}, []
+
+    def fake(s, q=None):
+        return [Offer("Fake", "9", PRO_TITLES[0], 1099.99, "http://y", True)] if listed["value"] else []
+
+    tmp = Path(tempfile.mkdtemp())
+    orig = ps5_watch.notify, ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV
+    ps5_watch.notify = lambda cfg, title, *a, **k: sent.append(title)
+    ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV = tmp / "state.json", tmp / "history.csv"
+    ps5_watch.RETAILERS["fake"] = ps5_watch.HTTP_RETAILERS["fake"] = fake
+    cfg = {**PRO_ONLY, "retailers": {"fake": True}}
+    try:
+        ps5_watch.run_once(cfg); assert len(sent) == 1
+        listed["value"] = False
+        ps5_watch.run_once(cfg)
+        st = ps5_watch.load_state()
+        assert st["in_stock"]["fake:9"] is False and st["history"][-1]["end"]   # counted as sold out
+        listed["value"] = True
+        ps5_watch.run_once(cfg); assert len(sent) == 2, sent                    # back: alerted again
+    finally:
+        ps5_watch.notify, ps5_watch.STATE_FILE, ps5_watch.HISTORY_CSV = orig
+        del ps5_watch.RETAILERS["fake"], ps5_watch.HTTP_RETAILERS["fake"]
+
+
+def test_crash_is_reported():
+    """A whole check crashing warns the phone (at most hourly) and is cleared on success."""
+    import tempfile
+    from pathlib import Path
+    import ps5_watch
+
+    sent = []
+    tmp = Path(tempfile.mkdtemp())
+    orig = ps5_watch.notify, ps5_watch.CRASH_FILE
+    ps5_watch.notify = lambda cfg, title, *a, **k: sent.append((cfg["ntfy"]["topic"], title))
+    ps5_watch.CRASH_FILE = tmp / "last_crash.json"
+    cfg = {"ntfy": {"server": "https://ntfy.sh", "topic": "t1"}}
+    try:
+        ps5_watch.report_crash(cfg, KeyError("filters"))
+        ps5_watch.report_crash(cfg, KeyError("filters"))
+        assert sent == [("t1", "PS5 watcher: checks are CRASHING")], sent   # once, not every run
+        assert "KeyError" in ps5_watch.CRASH_FILE.read_text()
+        assert ps5_watch.clear_crash()["alerted"] and not ps5_watch.CRASH_FILE.exists()
+        ps5_watch.report_crash(None, ValueError("bad yaml"))                 # config unreadable:
+        assert len(sent) == 2 and sent[1][0]                                 # topic read from the file
+    finally:
+        ps5_watch.notify, ps5_watch.CRASH_FILE = orig
+
+
 if __name__ == "__main__":
     test_canadacomputers_montreal_pickup()
     test_titles()
@@ -351,4 +406,6 @@ if __name__ == "__main__":
     test_pro_only()
     test_failing_store_slows_down()
     test_canadacomputers_backup_page()
+    test_vanished_listing_alerts_again()
+    test_crash_is_reported()
     print("all matcher tests passed")

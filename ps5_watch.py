@@ -582,7 +582,9 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    os.replace(tmp, STATE_FILE)  # all at once: a crash mid-write can't leave half a file
 
 
 def _history_csv(event: str, ts: float, store: str, price, title: str, url: str) -> None:
@@ -757,6 +759,18 @@ def run_once(cfg: dict, dry_run: bool = False) -> int:
             if not dry_run:
                 state["in_stock"][state_key] = now_available
 
+        # A listing that was in stock and has now vanished from the results (Amazon hides
+        # sold-out items) counts as sold out, so its next restock alerts again.
+        seen_keys = {f"{key}:{o.id}" for o in offers}
+        for sk, avail in list(state["in_stock"].items()):
+            if avail and sk.startswith(key + ":") and sk not in seen_keys and not dry_run:
+                log.info("no longer listed (counted as sold out): %s", sk)
+                h = next((h for h in reversed(state.get("history", []))
+                          if h["key"] == sk and h.get("end") is None), None)
+                if h:
+                    record_sold_out(state, sk, Offer(h["store"], sk, h["title"], h["price"], h["url"], False))
+                state["in_stock"][sk] = False
+
         listings = {p: sum(is_console_listing(o, cfg) and product_of(o.title) == p for o in offers)
                     for p in watched(cfg)}
         state.setdefault("last_check", {})[key] = {
@@ -840,6 +854,10 @@ def show_status(cfg: dict) -> None:
     state = load_state()
     task = _task_info()
     last_run = state.get("last_run")
+    try:
+        crash = json.loads(CRASH_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        crash = None
     stale_after = 15 * 60  # task runs every 5 min; allow a couple of misses
 
     print(f"\n{BOLD}PS5 stock watcher ({' + '.join(watched(cfg))}){RESET}   {DIM}{time.strftime('%a %b %d, %I:%M %p')}{RESET}\n")
@@ -848,6 +866,9 @@ def show_status(cfg: dict) -> None:
         verdict = f"{RED}NOT RUNNING - the scheduled task is not installed (run install_task.ps1){RESET}"
     elif task["State"] == "Disabled":
         verdict = f"{RED}NOT RUNNING - the scheduled task is disabled{RESET}"
+    elif crash:
+        verdict = (f"{RED}CRASHING - checks are failing since {_ago(crash.get('time'))}: "
+                   f"{crash.get('error', '?')[:90]} (details in ps5_watch.log){RESET}")
     elif not last_run:
         verdict = f"{YELLOW}STARTING - waiting for the first check to finish{RESET}"
     elif time.time() - last_run > stale_after:
@@ -962,6 +983,52 @@ def setup_logging(verbose: bool) -> None:
         log.addHandler(logging.StreamHandler(sys.stdout))
 
 
+CRASH_FILE = HERE / "last_crash.json"
+CRASH_ALERT_EVERY = 60 * 60
+
+
+def report_crash(cfg: dict | None, error: BaseException) -> None:
+    """A whole check crashed (bad config.yaml, a bug, ...). Log it, remember it for the
+    status screen, and warn the phone at most once an hour. Never raises."""
+    import traceback
+    try:
+        log.error("CHECK CRASHED: %s\n%s", error, "".join(traceback.format_exception(error)))
+        try:
+            info = json.loads(CRASH_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            info = {}
+        info.update(time=time.time(), error=f"{type(error).__name__}: {error}".splitlines()[0][:200])
+        topic = server = None
+        if cfg and isinstance(cfg.get("ntfy"), dict):
+            topic, server = cfg["ntfy"].get("topic"), cfg["ntfy"].get("server")
+        if not topic:  # config.yaml itself is broken: find the topic in its text
+            m = re.search(r"^\s*topic:\s*([\w-]+)", CONFIG_FILE.read_text(encoding="utf-8"), re.M)
+            topic = m.group(1) if m else None
+        if topic and time.time() - info.get("alerted", 0) >= CRASH_ALERT_EVERY:
+            try:
+                notify({"ntfy": {"server": server or "https://ntfy.sh", "topic": topic}},
+                       "PS5 watcher: checks are CRASHING",
+                       f"Every store check is failing because the watcher itself crashed.\n"
+                       f"Error: {info['error']}\nNo stores are being watched until this is fixed. "
+                       "Details are in ps5_watch.log.", priority="high", tags="rotating_light")
+                info["alerted"] = time.time()
+            except Exception as ne:
+                log.error("could not send crash alert: %s", ne)
+        CRASH_FILE.write_text(json.dumps(info), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def clear_crash() -> dict | None:
+    """A check finished: forget an earlier crash (and tell the phone if it was warned)."""
+    try:
+        info = json.loads(CRASH_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    CRASH_FILE.unlink(missing_ok=True)
+    return info
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="print results, send no alerts, don't save state")
@@ -978,7 +1045,15 @@ def main() -> None:
     if not CONFIG_FILE.exists():
         sys.exit(f"No {CONFIG_FILE.name} found. Copy config.example.yaml to {CONFIG_FILE.name} "
                  "and set your own ntfy topic in it.")
-    cfg = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8"))
+    scheduled_run = not (args.status or args.test_alert or args.dry_run)
+    if scheduled_run:
+        setup_logging(verbose=False)
+    try:
+        cfg = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        if scheduled_run:
+            report_crash(None, e)
+        raise
     if args.status:
         try:
             while True:
@@ -991,7 +1066,8 @@ def main() -> None:
                 time.sleep(30)
         except KeyboardInterrupt:
             return
-    setup_logging(verbose=args.dry_run or args.test_alert)
+    if not scheduled_run:
+        setup_logging(verbose=args.dry_run or args.test_alert)
 
     if args.test_alert:
         notify(cfg, "PS5 watcher test", "If you can read this, alerts are working.",
@@ -1003,8 +1079,23 @@ def main() -> None:
         return
 
     start = time.time()
-    n = run_once(cfg, dry_run=args.dry_run)
+    try:
+        n = run_once(cfg, dry_run=args.dry_run)
+    except Exception as e:
+        if args.dry_run:
+            raise
+        report_crash(cfg, e)
+        raise
     log.info("check done in %.1fs, %d matching offer(s) in stock", time.time() - start, n)
+    if not args.dry_run:
+        crash = clear_crash()
+        if crash and crash.get("alerted"):
+            try:
+                notify(cfg, "PS5 watcher: checks are working again",
+                       "The watcher stopped crashing; all stores are being checked again.",
+                       priority="low", tags="white_check_mark")
+            except Exception as ne:
+                log.error("could not send recovery alert: %s", ne)
 
 
 if __name__ == "__main__":

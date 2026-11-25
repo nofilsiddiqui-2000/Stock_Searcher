@@ -13,3 +13,5 @@ __pycache__/
 .claude/
 .vscode/
 .idea/
+last_crash.json
+*.tmp
