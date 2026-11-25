@@ -1,0 +1,38 @@
+# Stock watcher settings. Copy this file to config.yaml and edit it there
+# (config.yaml is kept out of git because it holds your private ntfy topic).
+
+ntfy:
+  server: https://ntfy.sh
+  # Subscribe to this exact topic in the ntfy phone app. Anyone who knows the
+  # name can see your alerts, so make it long and random.
+  topic: change-me-to-something-random-1234567890
+
+filters:
+  # Only the products listed here are watched. Alert only if the listed
+  # price (CAD, before tax) is under this.
+  max_price:
+    PS5 Pro: 1250        # regular price $1,099.99; room for bundles
+    # PS5 Digital: 850   # regular price $749.99
+  min_price: 300         # anything cheaper is an accessory, not the product itself
+  first_party_only: true # ignore marketplace / third-party sellers where the site tells us
+
+retailers:
+  # quick checks, no browser (every run, i.e. every 5 minutes)
+  bestbuy: true
+  canadacomputers: true
+  # these open a visible Microsoft Edge window for about a minute
+  staples: true    # opens only the watched products' pages (see STAPLES_PRODUCTS)
+  walmart: true
+  amazon: true
+  # EB Games is not supported: its Cloudflare bot check blocks automated browsers.
+
+# When stock is found, also play a loud alarm on this computer with a pop-up
+# (click Yes to open the product page). Phone alerts are sent either way.
+laptop_alarm: true
+
+# How often the Edge-window checks (Walmart, Amazon, Staples) run, in minutes.
+browser_check_minutes: 20
+
+# Send a "checker is broken" alert after this many failed checks in a row
+# (at one check every 5 minutes, 12 = about an hour).
+failure_alert_after: 12

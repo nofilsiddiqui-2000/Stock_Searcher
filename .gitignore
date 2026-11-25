@@ -1,0 +1,15 @@
+# private settings (your ntfy topic) - copy config.example.yaml to config.yaml
+config.yaml
+
+# created while running
+state.json
+stock_history.csv
+*.log
+*.log.*
+__pycache__/
+.pytest_cache/
+
+# local tool folders
+.claude/
+.vscode/
+.idea/
